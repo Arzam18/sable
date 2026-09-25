@@ -1,0 +1,213 @@
+name: Sable Android ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Sable ARM64
+    runs-on: ubuntu-24.04
+
+    env:
+      TARGET: aarch64-linux-android
+      ANDROID_API: "24"
+      NDK_VERSION: "27.2.12479018"
+
+    steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # Rust
+      # ------------------------------------------------------------
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      # ------------------------------------------------------------
+      # Android SDK + NDK
+      # ------------------------------------------------------------
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;35.0.0" \
+            "ndk;${NDK_VERSION}"
+
+      # ------------------------------------------------------------
+      # Locate NDK
+      # ------------------------------------------------------------
+      - name: Configure Android toolchain
+        shell: bash
+        run: |
+          set -e
+
+          NDK="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+
+          if [ ! -d "$NDK" ]; then
+            echo "ERROR: NDK not found:"
+            echo "$NDK"
+            exit 1
+          fi
+
+          CLANG="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+
+          if [ ! -x "$CLANG" ]; then
+            echo "ERROR: Android ARM64 clang not found:"
+            echo "$CLANG"
+            exit 1
+          fi
+
+          echo "ANDROID_NDK_ROOT=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_CLANG=$CLANG" >> "$GITHUB_ENV"
+
+          echo "NDK:"
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+
+          echo
+          echo "ARM64 linker:"
+          "$CLANG" --version
+
+      # ------------------------------------------------------------
+      # IMPORTANT:
+      # The repository contains:
+      #
+      # .cargo/config.toml
+      #
+      # with:
+      #
+      # target-cpu=native
+      #
+      # That is inappropriate for an x86_64 GitHub runner
+      # cross-compiling to Android ARM64.
+      #
+      # Override Cargo's rustflags for this build.
+      # ------------------------------------------------------------
+      - name: Configure ARM64 Rust flags
+        shell: bash
+        run: |
+          set -e
+
+          echo "Using generic AArch64 target."
+
+          echo "CARGO_BUILD_TARGET=$TARGET" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_CLANG" >> "$GITHUB_ENV"
+
+          # Override target-cpu=native from .cargo/config.toml.
+          #
+          # NEON is mandatory for AArch64, and Sable already contains
+          # a dedicated ARM64 NEON backend.
+          echo "RUSTFLAGS=-C target-cpu=generic" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------
+      # Show target configuration
+      # ------------------------------------------------------------
+      - name: Show Rust target configuration
+        run: |
+          rustc --version
+          cargo --version
+          rustup target list --installed
+
+          echo
+          echo "Target:"
+          echo "$TARGET"
+
+          echo
+          echo "Linker:"
+          echo "$ANDROID_CLANG"
+
+      # ------------------------------------------------------------
+      # Build
+      # ------------------------------------------------------------
+      - name: Build Sable
+        working-directory: .
+        run: |
+          set -eux
+
+          cargo build \
+            --release \
+            --target "$TARGET"
+
+      # ------------------------------------------------------------
+      # Verify binary exists
+      # ------------------------------------------------------------
+      - name: Verify ARM64 binary
+        shell: bash
+        run: |
+          set -e
+
+          BINARY="target/${TARGET}/release/sable-engine"
+
+          if [ ! -f "$BINARY" ]; then
+            echo "ERROR: Binary was not produced:"
+            echo "$BINARY"
+            exit 1
+          fi
+
+          if [ ! -x "$BINARY" ]; then
+            chmod +x "$BINARY"
+          fi
+
+          echo "Binary:"
+          ls -lh "$BINARY"
+
+          echo
+          echo "File information:"
+          file "$BINARY"
+
+          echo
+          echo "ELF header:"
+          "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h "$BINARY"
+
+          echo
+          echo "Machine architecture check:"
+          "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h "$BINARY" | grep -E "Class:|Machine:"
+
+          echo
+          echo "Expected:"
+          echo "Class:   ELF64"
+          echo "Machine: AArch64"
+
+      # ------------------------------------------------------------
+      # Package
+      # ------------------------------------------------------------
+      - name: Prepare release package
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p release
+
+          cp \
+            "target/${TARGET}/release/sable-engine" \
+            "release/sable-android-arm64"
+
+          chmod +x release/sable-android-arm64
+
+          echo "Sable Android ARM64 binary:"
+          ls -lh release/sable-android-arm64
+
+      # ------------------------------------------------------------
+      # Upload artifact
+      # ------------------------------------------------------------
+      - name: Upload ARM64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sable-android-arm64
+          path: release/sable-android-arm64
+          if-no-files-found: error
