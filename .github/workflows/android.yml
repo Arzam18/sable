@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Sable ARM64
+    name: Sable Android ARM64
     runs-on: ubuntu-24.04
 
     env:
@@ -17,40 +17,99 @@ jobs:
       NDK_VERSION: "27.2.12479018"
 
     steps:
-      # ------------------------------------------------------------
-      # Checkout
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # SOURCE
+      # ============================================================
+
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # Rust
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # RUST
+      # ============================================================
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
-      # ------------------------------------------------------------
-      # Android SDK + NDK
-      # ------------------------------------------------------------
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
 
-      - name: Install Android NDK
+      # ============================================================
+      # FIND ANDROID SDK
+      #
+      # Do NOT use android-actions/setup-android.
+      # GitHub's Ubuntu runner already contains the Android SDK.
+      # ============================================================
+
+      - name: Locate Android SDK
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          set -e
 
-          sdkmanager \
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          if [ -z "$ANDROID_SDK_ROOT" ]; then
+            if [ -n "$ANDROID_HOME" ]; then
+              echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+            else
+              echo "ERROR: Android SDK was not found."
+              exit 1
+            fi
+          fi
+
+          echo
+          echo "SDK contents:"
+          ls -la "$ANDROID_SDK_ROOT"
+
+          echo
+          echo "Installed NDKs:"
+          ls -la "$ANDROID_SDK_ROOT/ndk" || true
+
+
+      # ============================================================
+      # INSTALL / VERIFY NDK
+      # ============================================================
+
+      - name: Install Android NDK 27.2
+        shell: bash
+        run: |
+          set -e
+
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
+          fi
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found."
+            find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f -print || true
+            exit 1
+          fi
+
+          echo "Using:"
+          echo "$SDKMANAGER"
+
+          echo
+          echo "Installing NDK:"
+          echo "ndk;$NDK_VERSION"
+
+          "$SDKMANAGER" \
+            --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;35.0.0" \
             "ndk;${NDK_VERSION}"
 
-      # ------------------------------------------------------------
-      # Locate NDK
-      # ------------------------------------------------------------
-      - name: Configure Android toolchain
+
+      # ============================================================
+      # CONFIGURE NDK
+      # ============================================================
+
+      - name: Configure Android ARM64 toolchain
         shell: bash
         run: |
           set -e
@@ -60,13 +119,20 @@ jobs:
           if [ ! -d "$NDK" ]; then
             echo "ERROR: NDK not found:"
             echo "$NDK"
+
+            echo
+            echo "Available NDKs:"
+            find "$ANDROID_SDK_ROOT/ndk" -maxdepth 1 -mindepth 1 -type d -print || true
+
             exit 1
           fi
 
-          CLANG="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          CLANG="$TOOLCHAIN/aarch64-linux-android${ANDROID_API}-clang"
 
           if [ ! -x "$CLANG" ]; then
-            echo "ERROR: Android ARM64 clang not found:"
+            echo "ERROR: ARM64 Android clang not found:"
             echo "$CLANG"
             exit 1
           fi
@@ -74,66 +140,87 @@ jobs:
           echo "ANDROID_NDK_ROOT=$NDK" >> "$GITHUB_ENV"
           echo "ANDROID_CLANG=$CLANG" >> "$GITHUB_ENV"
 
+          echo
           echo "NDK:"
-          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+          echo "$NDK"
 
           echo
-          echo "ARM64 linker:"
+          echo "ARM64 compiler:"
+          echo "$CLANG"
+
+          echo
           "$CLANG" --version
 
-      # ------------------------------------------------------------
-      # IMPORTANT:
-      # The repository contains:
+
+      # ============================================================
+      # CARGO CONFIGURATION
+      #
+      # Sable contains:
       #
       # .cargo/config.toml
       #
-      # with:
+      # with target-cpu=native.
       #
-      # target-cpu=native
-      #
-      # That is inappropriate for an x86_64 GitHub runner
-      # cross-compiling to Android ARM64.
-      #
-      # Override Cargo's rustflags for this build.
-      # ------------------------------------------------------------
-      - name: Configure ARM64 Rust flags
+      # We must override that because the GitHub runner is x86-64.
+      # ============================================================
+
+      - name: Configure Cargo for Android ARM64
         shell: bash
         run: |
           set -e
 
-          echo "Using generic AArch64 target."
-
           echo "CARGO_BUILD_TARGET=$TARGET" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_CLANG" >> "$GITHUB_ENV"
 
-          # Override target-cpu=native from .cargo/config.toml.
-          #
-          # NEON is mandatory for AArch64, and Sable already contains
-          # a dedicated ARM64 NEON backend.
-          echo "RUSTFLAGS=-C target-cpu=generic" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_CLANG" \
+            >> "$GITHUB_ENV"
 
-      # ------------------------------------------------------------
-      # Show target configuration
-      # ------------------------------------------------------------
-      - name: Show Rust target configuration
-        run: |
-          rustc --version
-          cargo --version
-          rustup target list --installed
+          echo "RUSTFLAGS=-C target-cpu=generic" \
+            >> "$GITHUB_ENV"
 
           echo
-          echo "Target:"
+          echo "Cargo target:"
           echo "$TARGET"
 
           echo
-          echo "Linker:"
+          echo "Cargo linker:"
           echo "$ANDROID_CLANG"
 
-      # ------------------------------------------------------------
-      # Build
-      # ------------------------------------------------------------
+          echo
+          echo "Rust flags:"
+          echo "-C target-cpu=generic"
+
+
+      # ============================================================
+      # VERIFY TOOLCHAIN
+      # ============================================================
+
+      - name: Verify Rust and Android toolchain
+        shell: bash
+        run: |
+          set -e
+
+          echo "Rust:"
+          rustc --version
+
+          echo
+          echo "Cargo:"
+          cargo --version
+
+          echo
+          echo "Installed Rust targets:"
+          rustup target list --installed
+
+          echo
+          echo "Android compiler:"
+          "$ANDROID_CLANG" --version
+
+
+      # ============================================================
+      # BUILD
+      # ============================================================
+
       - name: Build Sable
-        working-directory: .
+        shell: bash
         run: |
           set -eux
 
@@ -141,71 +228,108 @@ jobs:
             --release \
             --target "$TARGET"
 
-      # ------------------------------------------------------------
-      # Verify binary exists
-      # ------------------------------------------------------------
-      - name: Verify ARM64 binary
+
+      # ============================================================
+      # FIND BINARY
+      # ============================================================
+
+      - name: Locate Sable binary
         shell: bash
         run: |
           set -e
 
-          BINARY="target/${TARGET}/release/sable-engine"
+          echo "Release directory:"
+          find "target/$TARGET/release" \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | sort
+
+          BINARY="target/$TARGET/release/sable-engine"
 
           if [ ! -f "$BINARY" ]; then
-            echo "ERROR: Binary was not produced:"
-            echo "$BINARY"
+            echo
+            echo "ERROR: sable-engine binary was not found."
+
+            echo
+            echo "Possible binaries:"
+            find "target/$TARGET/release" \
+              -maxdepth 1 \
+              -type f \
+              -executable \
+              -print
+
             exit 1
           fi
 
-          if [ ! -x "$BINARY" ]; then
-            chmod +x "$BINARY"
-          fi
+          chmod +x "$BINARY"
 
-          echo "Binary:"
+          echo
+          echo "Sable binary:"
           ls -lh "$BINARY"
 
-          echo
-          echo "File information:"
-          file "$BINARY"
+          echo "SABLE_BINARY=$BINARY" >> "$GITHUB_ENV"
+
+
+      # ============================================================
+      # VERIFY ELF ARCHITECTURE
+      # ============================================================
+
+      - name: Verify ARM64 ELF
+        shell: bash
+        run: |
+          set -e
+
+          LLVM_READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+
+          echo "========================================"
+          echo "ELF HEADER"
+          echo "========================================"
+
+          "$LLVM_READELF" -h "$SABLE_BINARY"
 
           echo
-          echo "ELF header:"
-          "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
-            -h "$BINARY"
+          echo "========================================"
+          echo "ARCHITECTURE"
+          echo "========================================"
+
+          "$LLVM_READELF" -h "$SABLE_BINARY" \
+            | grep -E "Class:|Machine:"
 
           echo
-          echo "Machine architecture check:"
-          "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
-            -h "$BINARY" | grep -E "Class:|Machine:"
-
-          echo
-          echo "Expected:"
+          echo "========================================"
+          echo "EXPECTED"
+          echo "========================================"
           echo "Class:   ELF64"
           echo "Machine: AArch64"
 
-      # ------------------------------------------------------------
-      # Package
-      # ------------------------------------------------------------
-      - name: Prepare release package
+
+      # ============================================================
+      # PACKAGE
+      # ============================================================
+
+      - name: Prepare artifact
         shell: bash
         run: |
           set -e
 
           mkdir -p release
 
-          cp \
-            "target/${TARGET}/release/sable-engine" \
-            "release/sable-android-arm64"
+          cp "$SABLE_BINARY" \
+            release/sable-android-arm64
 
           chmod +x release/sable-android-arm64
 
-          echo "Sable Android ARM64 binary:"
+          echo
+          echo "Final artifact:"
           ls -lh release/sable-android-arm64
 
-      # ------------------------------------------------------------
-      # Upload artifact
-      # ------------------------------------------------------------
-      - name: Upload ARM64 binary
+
+      # ============================================================
+      # UPLOAD
+      # ============================================================
+
+      - name: Upload Sable Android ARM64
         uses: actions/upload-artifact@v4
         with:
           name: sable-android-arm64
