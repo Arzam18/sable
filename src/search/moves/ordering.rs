@@ -180,16 +180,18 @@ impl MoveOrdering {
         &self,
         board: &Board,
         mv: Move,
-        previous_move: Option<Move>,
+        move_context: MoveContext,
         ply: u16,
     ) -> i32 {
         let side = crate::chess::side_to_move(board);
         let history = self.history[Self::quiet_history_index(board, side, mv)];
-        let continuation = previous_move.map_or(0, |previous| {
+        let moving_piece = crate::chess::piece_on(board, mv.from).unwrap_or(Piece::Pawn);
+        let continuation = move_context.previous.map_or(0, |previous| {
             self.continuation_history[Self::continuation_index(
-                side as usize,
-                previous.to as usize,
-                mv.from as usize,
+                0,
+                previous.piece as usize,
+                previous.mv.to as usize,
+                moving_piece as usize,
                 mv.to as usize,
             )]
         });
@@ -201,7 +203,7 @@ impl MoveOrdering {
         if self.killers[ordering_ply(ply)].contains(&Some(mv)) {
             adjustment += LMR_KILLER_PROTECTION();
         }
-        if let Some(previous) = previous_move
+        if let Some(previous) = move_context.previous_move()
             && self.counter_moves[Self::counter_move_index(
                 side as usize,
                 previous.from as usize,

@@ -474,7 +474,7 @@ pub(in crate::search) fn negamax(
                 gives_check,
                 static_eval.improving,
                 || {
-                    context.ordering().reduction_adjustment(board, ordered.mv, previous_move, ply)
+                    context.ordering().reduction_adjustment(board, ordered.mv, move_context, ply)
                 },
             )
         };

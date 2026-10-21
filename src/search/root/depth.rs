@@ -151,7 +151,7 @@ pub(in crate::search) fn search_root_child(
             !crate::chess::checkers(board).is_empty(),
             !crate::chess::checkers(&next).is_empty(),
             true,
-            || context.ordering().reduction_adjustment(board, ordered.mv, None, 0),
+            || context.ordering().reduction_adjustment(board, ordered.mv, MoveContext::default(), 0),
         );
         let mut scout = negamax(
             &next,
