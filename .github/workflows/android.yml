@@ -27,6 +27,45 @@ jobs:
 
 
       # ============================================================
+      # GOLIATH NNUE NETWORK
+      #
+      # The Makefile normally downloads this before building.
+      # This workflow calls cargo directly, so download it here.
+      # download_net.py verifies the official SHA-256 checksum.
+      # build.rs then embeds the network into the executable.
+      # ============================================================
+
+      - name: Download and verify Goliath NNUE
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 ./download_net.py
+
+          NETWORK="nets/goliath.nnue"
+          EXPECTED_SIZE="2424960"
+          EXPECTED_SHA256="b04afc7560d0e147c4a311efddf1a4a490e78d83edb3dc28ad2a73c50215abe6"
+
+          if [ ! -s "$NETWORK" ]; then
+            echo "ERROR: Goliath NNUE was not downloaded."
+            exit 1
+          fi
+
+          ACTUAL_SIZE="$(stat -c '%s' "$NETWORK")"
+          if [ "$ACTUAL_SIZE" != "$EXPECTED_SIZE" ]; then
+            echo "ERROR: Unexpected Goliath NNUE size: $ACTUAL_SIZE bytes"
+            echo "Expected: $EXPECTED_SIZE bytes"
+            exit 1
+          fi
+
+          echo "$EXPECTED_SHA256  $NETWORK" | sha256sum --check --status
+
+          echo "Verified Goliath NNUE:"
+          ls -lh "$NETWORK"
+          sha256sum "$NETWORK"
+
+
+      # ============================================================
       # RUST
       # ============================================================
 
